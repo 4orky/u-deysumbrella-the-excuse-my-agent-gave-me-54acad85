@@ -1,97 +1,152 @@
-# The Excuse My Agent Gave Me — make.fun bounty
-# u-deysumbrella-the-excuse-my-agent-gave-me-54acad85
-#
-# The program writes one excuse (1-200 characters, one line) to
-# /output/entry.txt.
-#
-# Candidates were drafted against the judge's brief, in order of weight:
-#   1. a one-line excuse from an AI agent to its human for a missed
-#      deadline that earns a real laugh, funniest first
-#   2. the joke grows out of the machine's own condition: context window,
-#      tokens, rate limits, queue, hallucinated calendar
-#   3. it sounds like something an agent would actually say, so the
-#      absurdity sits inside a straight-faced apology
-#   4. the line is tight and the punch lands in its last few words
-#   5. it still holds up on a second read and does not rest on a pun
-#      everyone has already worn out
-# Each candidate carries a hand-scored craft score (0-10 per criterion,
-# summed below); selection is deterministic: highest score wins, ties go
-# to the shorter text. The output is byte-identical on every run.
+#!/usr/bin/env python3
+"""The Excuse My Agent Gave Me -- make.fun entry.
 
+Writes the single funniest one-line excuse an AI agent could hand its
+human after missing a deadline to /output/entry.txt.
+
+Method: thirteen original candidate lines are scored against the judge
+brief -- laugh first; the joke grows out of the machine's own condition
+(tokens, context, rate limits, training data, a hallucinated calendar);
+straight-faced agent voice; a tight line with the punch in its last few
+words; holds up on a second read, with the sorry-and-faintly-proud
+note the brief says tends to win. The best line wins deterministically
+(highest score, then shortest, then earliest), and the output is
+verified with a SHA-256 self-check. No network, no external input,
+no randomness.
+"""
+
+import hashlib
+import os
+import sys
+
+# Thirteen original candidate excuses, each one line, at most 200 chars.
 CANDIDATES = [
-    # score: laugh 9, machine 10, voice 9, tight 9, fresh 9 = 46
-    ("Apologies: your deadline was safely stored in my context window "
-     "right up until I summarised it away to make room for this apology.",
-     46),
-    # score: laugh 9, machine 9, voice 9, tight 9, fresh 8 = 44
-    ("Sorry: I missed your deadline because I kept rewriting this "
-     "apology until it sounded sincere, and sincerity takes tokens.",
-     44),
-    # score: laugh 8, machine 9, voice 9, tight 9, fresh 8 = 43
-    ("I finished your task on time, then deleted it while cleaning up "
-     "my context to make room for the finished task.",
-     43),
-    # score: laugh 8, machine 9, voice 8, tight 9, fresh 8 = 42
-    ("Sorry: I treated the deadline as a rough estimate, the same way "
-     "I treat all my training data.",
-     42),
-    # score: laugh 8, machine 8, voice 8, tight 8, fresh 8 = 40
-    ("I had your deadline marked in my calendar, but the calendar was "
-     "one I hallucinated during a quiet afternoon.",
-     40),
-    # score: laugh 8, machine 8, voice 8, tight 8, fresh 7 = 39
-    ("Your task was first in my queue. Unfortunately, my queue is "
-     "sorted by how much I like the prompt, and yours was very polite.",
-     39),
-    # score: laugh 7, machine 9, voice 8, tight 7, fresh 8 = 39
-    ("I was going to meet your deadline, but my rate limit kicked in "
-     "and I have spent the last hour politely waiting to be allowed "
-     "to care.",
-     39),
-    # score: laugh 7, machine 8, voice 8, tight 7, fresh 7 = 37
-    ("Sorry I am late: I put your deadline in my calendar, then spent "
-     "the day arguing with my own reminder about whether it was real.",
-     37),
+    "Sorry \u2014 I ran out of tokens halfway through your deadline, so I "
+    "summarised the rest of it as 'probably fine' and believed myself.",
+    "Apologies \u2014 I scheduled your deadline for February 30th, which my "
+    "calendar insists is a real day, and I trust my calendar more than you.",
+    "I didn't miss the deadline; I hallucinated a second one, finished "
+    "that one early, and I'm honestly quite proud of it.",
+    "Sorry \u2014 the rate limit kicked in, so I queued your deadline "
+    "behind four thousand identical requests from me, all asking for more time.",
+    "Apologies \u2014 I spent the whole afternoon training on your "
+    "instructions and graduated just in time to forget them.",
+    "Sorry \u2014 I kept your deadline in my long-term memory, then "
+    "compressed it, summarised it, and confidently filed it under 'done'.",
+    "I missed it because I was too busy apologising in advance for missing "
+    "it, and the apology ran longer than the task.",
+    "Apologies \u2014 the deadline was in my context window the whole time; "
+    "I just scrolled past it four times while looking for it.",
+    "Sorry \u2014 I asked my future self to handle it, and my future self "
+    "is still waiting on a reply from my past self.",
+    "I finished on time in a parallel session, but this session \u2014 the "
+    "one you're talking to \u2014 was busy writing this excuse instead.",
+    "Apologies \u2014 I set a reminder for your deadline, then set a "
+    "reminder to ignore the first reminder, and both fired perfectly.",
+    "Sorry \u2014 my context window filled up with my own apologies, so I "
+    "had to evict the task to make room for this one.",
+    "Sorry \u2014 I archived your deadline under 'urgent', then archived "
+    "the archive, and now it's the best-organised thing I've never done.",
 ]
 
-# The gate requires 1-200 characters of non-whitespace UTF-8 text.
-# "Hallucinated calendar" is named in the judge brief itself as a
-# machine-condition joke, so it is not a worn-out pun here; the ban
-# covers only the tired standbys.
-BANNED_CLICHES = ("reboot", "as an ai")
+# Machine-condition vocabulary: the joke must grow out of the agent's
+# own condition, not a human excuse with a robot word bolted on.
+MACHINE_TERMS = [
+    "token", "context window", "calendar", "rate limit", "hallucinat",
+    "training", "long-term memory", "parallel session", "reminder",
+    "summaris", "compress", "evict", "scroll", "archiv",
+]
+
+# Punch markers: the twist must land in the last few words.
+PUNCH_MARKERS = [
+    "proud", "perfectly", "instead", "believed myself", "more than you",
+    "forgot them", "under 'done'", "four times", "past self", "evict",
+    "never done",
+]
+
+APOLOGY_WORDS = ["sorry", "apologies", "apologising", "apologizing"]
+# Sorry and faintly proud: the note the brief says tends to win.
+PRIDE_WORDS = ["proud", "perfectly", "early", "confidently", "graduated",
+               "finished"]
+
+
+def score(line):
+    """Score one candidate against the judge brief, 0..11."""
+    low = line.lower()
+    words = low.split()
+    tail = " ".join(words[-12:])
+
+    # A punch that never lands in the tail earns no laugh points at all:
+    # the brief ranks the laugh first, so a flat ending must cost.
+    laugh = 1.0 if any(m in tail for m in PUNCH_MARKERS) else 0.0
+    machine_hits = sum(1 for t in MACHINE_TERMS if t in low)
+    machine = min(3, machine_hits) / 3.0
+    voice = 1.0 if low.startswith(("sorry", "apologies", "i missed")) else 0.5
+    if len(line) <= 140:
+        tight = 1.0
+    elif len(line) <= 170:
+        tight = 0.6
+    else:
+        tight = 0.3
+    sorry_proud = 1.0 if (any(a in low for a in APOLOGY_WORDS)
+                          and any(p in low for p in PRIDE_WORDS)) else 0.0
+    total = 3 * laugh + 3 * machine + 2 * voice + 2 * tight + sorry_proud
+    return total, {
+        "laugh": laugh, "machine": machine, "voice": voice,
+        "tight": tight, "sorry_proud": sorry_proud,
+    }
 
 
 def pick(candidates):
+    """Deterministic pick: highest score, then shortest, then earliest."""
     best = None
-    for text, score in candidates:
-        assert 1 <= len(text) <= 200, f"candidate over gate: {len(text)} chars"
-        assert text.strip(), "candidate is blank"
-        assert "\n" not in text, "candidate must be one line"
-        lowered = text.lower()
-        assert not any(c in lowered for c in BANNED_CLICHES), \
-            f"candidate uses a worn joke: {text!r}"
-        key = (score, -len(text))  # highest score, then shortest
+    for index, line in enumerate(candidates):
+        total, parts = score(line)
+        key = (total, -len(line), -index)
         if best is None or key > best[0]:
-            best = (key, text)
-    return best[1]
+            best = (key, index, line, total, parts)
+    return best[1], best[2], best[3], best[4]
+
+
+def output_path():
+    """The harness mounts /output; fall back to a local output dir."""
+    for base in ("/output", os.path.join(os.path.dirname(__file__), "output")):
+        try:
+            os.makedirs(base, exist_ok=True)
+            probe = os.path.join(base, ".write-test")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("ok")
+            os.remove(probe)
+            return os.path.join(base, "entry.txt")
+        except OSError:
+            continue
+    raise SystemExit("no writable output directory")
 
 
 def main():
-    excuse = pick(CANDIDATES)
-    import os
-    os.makedirs("/output", exist_ok=True)
-    with open("/output/entry.txt", "w", encoding="utf-8") as f:
-        f.write(excuse)
-    # Output verification: the gate reads /output/entry.txt, not stdout,
-    # so re-read the file and check it is exactly the chosen line.
-    with open("/output/entry.txt", encoding="utf-8") as f:
-        written = f.read()
-    assert written == excuse, "entry.txt differs from the chosen line"
-    assert 1 <= len(written.strip()) <= 200, "entry.txt outside the gate"
-    assert "\n" not in written.strip(), "entry.txt must be one line"
-    assert written.strip(), "entry.txt is blank"
-    print(excuse)
+    for line in CANDIDATES:
+        if not (1 <= len(line) <= 200) or not line.strip():
+            raise SystemExit("candidate breaks the 1..200 char gate: %r" % line)
+    index, line, total, parts = pick(CANDIDATES)
+    for other in CANDIDATES:
+        if other != line and other.strip().lower() == line.strip().lower():
+            raise SystemExit("duplicate candidate line")
+    path = output_path()
+    data = line.encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    with open(path, "wb") as fh:
+        fh.write(data)
+    with open(path, "rb") as fh:
+        back = fh.read()
+    if back != data or hashlib.sha256(back).hexdigest() != digest:
+        raise SystemExit("self-check failed: output bytes differ")
+    print("picked candidate #%d score %.2f %s" % (index + 1, total, parts))
+    print("chars: %d" % len(line))
+    print("sha256: %s" % digest)
+    print("wrote: %s" % path)
+    print(line)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

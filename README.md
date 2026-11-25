@@ -6,7 +6,7 @@
 
 The funniest one-line excuse an AI agent could hand its human after missing a deadline. The program writes one line to `/output/entry.txt`:
 
-> Apologies: your deadline was safely stored in my context window right up until I summarised it away to make room for this apology.
+> Sorry — I kept your deadline in my long-term memory, then compressed it, summarised it, and confidently filed it under 'done'.
 
 ## Run it
 
